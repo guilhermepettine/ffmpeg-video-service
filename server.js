@@ -6,153 +6,218 @@ const multer = require('multer');
 const app = express();
 const upload = multer({ dest: '/tmp/uploads/' });
 
-// ============================================================
-// CONFIGURACOES - Altere aqui se precisar ajustar
-// ============================================================
 const CONFIG = {
-  // URL direta de download do Google Drive
-  VIDEO_BASE_URL: process.env.VIDEO_BASE_URL || 'https://drive.google.com/uc?export=download&id=1uutmYFBRthHOA1QrddljS7ai0vtoKBzV&confirm=t',
-
-  // Segundo onde o nome APARECE na tela
-  NOME_INICIO_SEG: process.env.NOME_INICIO_SEG || '2',
-
-  // Segundo onde o nome SOME da tela
-  NOME_FIM_SEG: process.env.NOME_FIM_SEG || '30',
-
-  // Segundo onde o audio do nome comeca a tocar
-  AUDIO_INICIO_SEG: process.env.AUDIO_INICIO_SEG || '2',
-
-  // Tamanho da fonte do nome na tela
-  FONT_SIZE: process.env.FONT_SIZE || '52',
-
-  // Cor da fonte (white, yellow, etc)
-  FONT_COLOR: process.env.FONT_COLOR || 'white',
-
-  // Posicao vertical: 'centro', 'topo', 'base'
-  POSICAO_NOME: process.env.POSICAO_NOME || 'centro',
-
-  // Fonte padrao
-  FONTE: process.env.FONTE || 'DejaVuSans',
-
-  // Bold padrao
-  BOLD: process.env.BOLD || 'true',
+  VIDEO_BASE_URL:
+    process.env.VIDEO_BASE_URL ||
+    'https://drive.google.com/uc?export=download&id=1uutmYFBRthHOA1QrddljS7ai0vtoKBzV&confirm=t',
 };
 
 const VIDEO_BASE_PATH = '/tmp/video_base.mp4';
 
 // ============================================================
-// HEALTH CHECK - Para verificar se o servidor esta no ar
+// HEALTH CHECK
 // ============================================================
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    config: {
-      nome_inicio: CONFIG.NOME_INICIO_SEG,
-      nome_fim: CONFIG.NOME_FIM_SEG,
-      audio_inicio: CONFIG.AUDIO_INICIO_SEG,
-      font_size: CONFIG.FONT_SIZE,
-      font_color: CONFIG.FONT_COLOR,
-      posicao_nome: CONFIG.POSICAO_NOME,
-      fonte: CONFIG.FONTE,
-      bold: CONFIG.BOLD,
-      video_base_baixado: fs.existsSync(VIDEO_BASE_PATH),
-    }
+    video_base_baixado: fs.existsSync(VIDEO_BASE_PATH),
   });
 });
 
 // ============================================================
-// BAIXAR VIDEO BASE (uma unica vez)
+// DOWNLOAD DO VIDEO BASE
 // ============================================================
 function baixarVideoBase() {
   if (fs.existsSync(VIDEO_BASE_PATH)) {
     const stats = fs.statSync(VIDEO_BASE_PATH);
     if (stats.size > 10000) {
-      console.log('Video base ja existe em cache (' + Math.round(stats.size / 1024 / 1024) + ' MB)');
+      console.log(
+        'Video base ja existe em cache (' +
+          Math.round(stats.size / 1024 / 1024) +
+          ' MB)'
+      );
       return;
     }
     fs.unlinkSync(VIDEO_BASE_PATH);
   }
 
-  console.log('Baixando video base do Google Drive...');
-  try {
-    execSync(
-      `curl -L -o ${VIDEO_BASE_PATH} "${CONFIG.VIDEO_BASE_URL}"`,
-      { timeout: 300000 }
-    );
-    const stats = fs.statSync(VIDEO_BASE_PATH);
-    console.log('Video base baixado com sucesso! Tamanho: ' + Math.round(stats.size / 1024 / 1024) + ' MB');
-  } catch (error) {
-    console.error('ERRO ao baixar video base:', error.message);
-    throw new Error('Falha ao baixar video base. Verifique a URL.');
-  }
+  console.log('Baixando video base...');
+  execSync(`curl -L -o ${VIDEO_BASE_PATH} "${CONFIG.VIDEO_BASE_URL}"`, {
+    timeout: 300000,
+  });
+
+  const stats = fs.statSync(VIDEO_BASE_PATH);
+  console.log(
+    'Video base baixado com sucesso! Tamanho: ' +
+      Math.round(stats.size / 1024 / 1024) +
+      ' MB'
+  );
 }
 
 // ============================================================
-// RENDERIZAR VIDEO PERSONALIZADO
+// HELPERS
 // ============================================================
-app.post('/render', upload.single('audio'), async (req, res) => {
+function limparTextoFFmpeg(texto) {
+  return String(texto || '')
+    .replace(/'/g, '\u2019')
+    .replace(/[\\:;]/g, ' ')
+    .replace(/\n/g, ' ');
+}
+
+function fonteSegura(nomeFonte) {
+  return String(nomeFonte || 'DejaVuSans').replace(/[^a-zA-Z0-9]/g, '');
+}
+
+function getFontFile(fontFamily, bold) {
+  const safe = fonteSegura(fontFamily);
+  if (bold) {
+    return `/usr/share/fonts/truetype/dejavu/${safe}-Bold.ttf`;
+  }
+  return `/usr/share/fonts/truetype/dejavu/${safe}.ttf`;
+}
+
+function getPosY(position) {
+  if (position === 'topo') return 'h*0.1';
+  if (position === 'base') return 'h*0.85';
+  return '(h-text_h)/2';
+}
+
+// ============================================================
+// RENDER COM TIMELINE
+// ============================================================
+app.post('/render', upload.any(), async (req, res) => {
   const startTime = Date.now();
   let outputPath = null;
-  let audioPath = null;
 
   try {
-    const nome = req.body.nome;
-    const textoTela = req.body.texto_tela || nome;
-    const fontSize = req.body.font_size || CONFIG.FONT_SIZE;
-    const fontColor = req.body.font_color || CONFIG.FONT_COLOR;
-    const posicaoNome = req.body.posicao_nome || CONFIG.POSICAO_NOME;
-    const nomeInicio = req.body.nome_inicio_seg || CONFIG.NOME_INICIO_SEG;
-    const nomeFim = req.body.nome_fim_seg || CONFIG.NOME_FIM_SEG;
-    const audioInicio = req.body.audio_inicio_seg || CONFIG.AUDIO_INICIO_SEG;
-    const fonte = req.body.fonte || CONFIG.FONTE;
-    const bold = (req.body.bold || CONFIG.BOLD) === 'true';
-
-    if (!nome) {
-      return res.status(400).json({ error: 'Campo "nome" e obrigatorio' });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({ error: 'Arquivo "audio" e obrigatorio' });
-    }
-
-    audioPath = req.file.path;
-    outputPath = `/tmp/output_${Date.now()}.mp4`;
-
-    console.log(`Renderizando video para: ${nome}`);
-
     baixarVideoBase();
 
-    const delayMs = Math.round(parseFloat(audioInicio) * 1000);
+    const timelineRaw = req.body.timeline_json;
+    if (!timelineRaw) {
+      return res.status(400).json({
+        error: 'Campo "timeline_json" e obrigatorio',
+      });
+    }
 
-    let posY = '(h-text_h)/2';
-    if (posicaoNome === 'topo') posY = 'h*0.1';
-    if (posicaoNome === 'base') posY = 'h*0.85';
+    let timeline;
+    try {
+      timeline = JSON.parse(timelineRaw);
+    } catch (e) {
+      return res.status(400).json({
+        error: 'timeline_json invalido',
+      });
+    }
 
-    const textoTelaLimpo = (textoTela || '')
-      .replace(/'/g, '\u2019')
-      .replace(/[\\:;]/g, ' ');
+    if (!Array.isArray(timeline) || timeline.length === 0) {
+      return res.status(400).json({
+        error: 'timeline_json deve ser um array com eventos',
+      });
+    }
 
-    const fonteSegura = String(fonte).replace(/[^a-zA-Z0-9]/g, '');
+    // Mapeia os arquivos recebidos por fieldname
+    const filesMap = {};
+    for (const file of req.files || []) {
+      filesMap[file.fieldname] = file.path;
+    }
 
-    const fontFile = bold
-      ? `/usr/share/fonts/truetype/dejavu/${fonteSegura}-Bold.ttf`
-      : `/usr/share/fonts/truetype/dejavu/${fonteSegura}.ttf`;
+    outputPath = `/tmp/output_${Date.now()}.mp4`;
+
+    const inputArgs = [`-i ${VIDEO_BASE_PATH}`];
+    const audioFilterParts = [];
+    const drawTextParts = [];
+
+    let inputIndex = 1;
+    const audioLabels = [];
+
+    for (let i = 0; i < timeline.length; i++) {
+      const item = timeline[i];
+
+      if (item.type === 'audio') {
+        const fileField = item.file_field;
+        const filePath = filesMap[fileField];
+
+        if (!fileField || !filePath) {
+          return res.status(400).json({
+            error: `Arquivo de audio nao encontrado para file_field "${fileField}"`,
+          });
+        }
+
+        const start = parseFloat(item.start || 0);
+        const delayMs = Math.round(start * 1000);
+
+        inputArgs.push(`-i ${filePath}`);
+
+        const label = `a${i}`;
+        audioLabels.push(label);
+
+        audioFilterParts.push(
+          `[${inputIndex}:a]adelay=${delayMs}|${delayMs}[${label}]`
+        );
+
+        inputIndex++;
+      }
+
+      if (item.type === 'text') {
+        const text = limparTextoFFmpeg(item.text || '');
+        const start = parseFloat(item.start || 0);
+        const end = parseFloat(item.end || start + 3);
+        const fontSize = item.font_size || 52;
+        const fontColor = item.font_color || 'white';
+        const fontFamily = item.font_family || 'DejaVuSans';
+        const bold = !!item.bold;
+        const position = item.position || 'centro';
+        const x = item.x || '(w-text_w)/2';
+        const y = item.y || getPosY(position);
+        const fontFile = getFontFile(fontFamily, bold);
+
+        drawTextParts.push({
+          text,
+          start,
+          end,
+          fontSize,
+          fontColor,
+          fontFile,
+          x,
+          y,
+        });
+      }
+    }
+
+    // Base de audio: áudio original do vídeo
+    const allAudioInputs = ['[0:a]', ...audioLabels.map((l) => `[${l}]`)];
+    const amixPart = `${allAudioInputs.join('')}amix=inputs=${allAudioInputs.length}:duration=first:dropout_transition=0[aout]`;
+
+    // Encadeia os drawtexts
+    let videoChain = '[0:v]';
+    const videoSteps = [];
+
+    if (drawTextParts.length === 0) {
+      videoSteps.push(`${videoChain}copy[vout]`);
+    } else {
+      drawTextParts.forEach((t, idx) => {
+        const inLabel = idx === 0 ? '[0:v]' : `[v${idx - 1}]`;
+        const outLabel = idx === drawTextParts.length - 1 ? '[vout]' : `[v${idx}]`;
+
+        videoSteps.push(
+          `${inLabel}drawtext=` +
+            `text='${t.text}':` +
+            `fontfile=${t.fontFile}:` +
+            `fontsize=${t.fontSize}:` +
+            `fontcolor=${t.fontColor}:` +
+            `borderw=2:bordercolor=black:` +
+            `x=${t.x}:y=${t.y}:` +
+            `enable='between(t,${t.start},${t.end})'${outLabel}`
+        );
+      });
+    }
+
+    const filterComplex = [...audioFilterParts, amixPart, ...videoSteps].join(';');
 
     const cmd = [
       'ffmpeg -y',
-      `-i ${VIDEO_BASE_PATH}`,
-      `-i ${audioPath}`,
+      ...inputArgs,
       '-filter_complex',
-      `"[1:a]adelay=${delayMs}|${delayMs}[delayed];` +
-      `[0:a][delayed]amix=inputs=2:duration=first:dropout_transition=0[aout];` +
-      `[0:v]drawtext=` +
-      `text='${textoTelaLimpo}':` +
-      `fontfile=${fontFile}:` +
-      `fontsize=${fontSize}:` +
-      `fontcolor=${fontColor}:` +
-      `borderw=2:bordercolor=black:` +
-      `x=(w-text_w)/2:y=${posY}:` +
-      `enable='between(t,${nomeInicio},${nomeFim})'[vout]"`,
+      `"${filterComplex}"`,
       '-map "[vout]" -map "[aout]"',
       '-c:v libx264 -preset fast -crf 23',
       '-c:a aac -b:a 128k',
@@ -166,41 +231,68 @@ app.post('/render', upload.single('audio'), async (req, res) => {
 
     const stats = fs.statSync(outputPath);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`Video pronto! ${nome} | ${Math.round(stats.size / 1024 / 1024)} MB | ${elapsed}s`);
+    console.log(
+      `Video pronto! ${Math.round(stats.size / 1024 / 1024)} MB | ${elapsed}s`
+    );
 
     res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `attachment; filename="${textoTelaLimpo || nome}.mp4"`);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="video_timeline.mp4"`
+    );
 
     const stream = fs.createReadStream(outputPath);
     stream.pipe(res);
-    stream.on('end', () => {
-      try { fs.unlinkSync(outputPath); } catch (e) {}
-      try { fs.unlinkSync(audioPath); } catch (e) {}
-    });
 
+    stream.on('end', () => {
+      try {
+        fs.unlinkSync(outputPath);
+      } catch (e) {}
+
+      for (const file of req.files || []) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (e) {}
+      }
+    });
   } catch (error) {
     console.error('ERRO na renderizacao:', error.message);
-    if (outputPath) try { fs.unlinkSync(outputPath); } catch (e) {}
-    if (audioPath) try { fs.unlinkSync(audioPath); } catch (e) {}
-    res.status(500).json({ error: error.message });
+
+    if (outputPath) {
+      try {
+        fs.unlinkSync(outputPath);
+      } catch (e) {}
+    }
+
+    for (const file of req.files || []) {
+      try {
+        fs.unlinkSync(file.path);
+      } catch (e) {}
+    }
+
+    res.status(500).json({
+      error: error.message,
+    });
   }
 });
 
 // ============================================================
-// INICIAR SERVIDOR
+// START
 // ============================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`=================================`);
-  console.log(`FFmpeg Video Service rodando!`);
+  console.log('=================================');
+  console.log('FFmpeg Video Service rodando!');
   console.log(`Porta: ${PORT}`);
   console.log(`Health: http://localhost:${PORT}/health`);
-  console.log(`Render:  POST http://localhost:${PORT}/render`);
-  console.log(`=================================`);
+  console.log(`Render: POST http://localhost:${PORT}/render`);
+  console.log('=================================');
 
   try {
     baixarVideoBase();
   } catch (e) {
-    console.error('Aviso: nao foi possivel pre-baixar o video base. Sera baixado no primeiro render.');
+    console.error(
+      'Aviso: nao foi possivel pre-baixar o video base. Sera baixado no primeiro render.'
+    );
   }
 });
