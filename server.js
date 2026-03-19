@@ -12,13 +12,13 @@ const upload = multer({ dest: '/tmp/uploads/' });
 const CONFIG = {
   // URL direta de download do Google Drive
   VIDEO_BASE_URL: process.env.VIDEO_BASE_URL || 'https://drive.google.com/uc?export=download&id=1uutmYFBRthHOA1QrddljS7ai0vtoKBzV&confirm=t',
-  
+
   // Segundo onde o nome APARECE na tela
   NOME_INICIO_SEG: process.env.NOME_INICIO_SEG || '2',
-  
+
   // Segundo onde o nome SOME da tela
   NOME_FIM_SEG: process.env.NOME_FIM_SEG || '30',
-  
+
   // Segundo onde o audio do nome comeca a tocar
   AUDIO_INICIO_SEG: process.env.AUDIO_INICIO_SEG || '2',
 
@@ -30,6 +30,12 @@ const CONFIG = {
 
   // Posicao vertical: 'centro', 'topo', 'base'
   POSICAO_NOME: process.env.POSICAO_NOME || 'centro',
+
+  // Fonte padrao
+  FONTE: process.env.FONTE || 'DejaVuSans',
+
+  // Bold padrao
+  BOLD: process.env.BOLD || 'true',
 };
 
 const VIDEO_BASE_PATH = '/tmp/video_base.mp4';
@@ -38,12 +44,17 @@ const VIDEO_BASE_PATH = '/tmp/video_base.mp4';
 // HEALTH CHECK - Para verificar se o servidor esta no ar
 // ============================================================
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     config: {
       nome_inicio: CONFIG.NOME_INICIO_SEG,
       nome_fim: CONFIG.NOME_FIM_SEG,
       audio_inicio: CONFIG.AUDIO_INICIO_SEG,
+      font_size: CONFIG.FONT_SIZE,
+      font_color: CONFIG.FONT_COLOR,
+      posicao_nome: CONFIG.POSICAO_NOME,
+      fonte: CONFIG.FONTE,
+      bold: CONFIG.BOLD,
       video_base_baixado: fs.existsSync(VIDEO_BASE_PATH),
     }
   });
@@ -59,7 +70,6 @@ function baixarVideoBase() {
       console.log('Video base ja existe em cache (' + Math.round(stats.size / 1024 / 1024) + ' MB)');
       return;
     }
-    // Arquivo muito pequeno = download incompleto
     fs.unlinkSync(VIDEO_BASE_PATH);
   }
 
@@ -67,7 +77,7 @@ function baixarVideoBase() {
   try {
     execSync(
       `curl -L -o ${VIDEO_BASE_PATH} "${CONFIG.VIDEO_BASE_URL}"`,
-      { timeout: 300000 } // 5 minutos de timeout
+      { timeout: 300000 }
     );
     const stats = fs.statSync(VIDEO_BASE_PATH);
     console.log('Video base baixado com sucesso! Tamanho: ' + Math.round(stats.size / 1024 / 1024) + ' MB');
@@ -86,11 +96,21 @@ app.post('/render', upload.single('audio'), async (req, res) => {
   let audioPath = null;
 
   try {
-    // Validar inputs
     const nome = req.body.nome;
+    const textoTela = req.body.texto_tela || nome;
+    const fontSize = req.body.font_size || CONFIG.FONT_SIZE;
+    const fontColor = req.body.font_color || CONFIG.FONT_COLOR;
+    const posicaoNome = req.body.posicao_nome || CONFIG.POSICAO_NOME;
+    const nomeInicio = req.body.nome_inicio_seg || CONFIG.NOME_INICIO_SEG;
+    const nomeFim = req.body.nome_fim_seg || CONFIG.NOME_FIM_SEG;
+    const audioInicio = req.body.audio_inicio_seg || CONFIG.AUDIO_INICIO_SEG;
+    const fonte = req.body.fonte || CONFIG.FONTE;
+    const bold = (req.body.bold || CONFIG.BOLD) === 'true';
+
     if (!nome) {
       return res.status(400).json({ error: 'Campo "nome" e obrigatorio' });
     }
+
     if (!req.file) {
       return res.status(400).json({ error: 'Arquivo "audio" e obrigatorio' });
     }
@@ -100,21 +120,24 @@ app.post('/render', upload.single('audio'), async (req, res) => {
 
     console.log(`Renderizando video para: ${nome}`);
 
-    // Garantir que o video base esta baixado
     baixarVideoBase();
 
-    // Calcular delay do audio em milissegundos
-    const delayMs = Math.round(parseFloat(CONFIG.AUDIO_INICIO_SEG) * 1000);
+    const delayMs = Math.round(parseFloat(audioInicio) * 1000);
 
-    // Calcular posicao Y do texto
-    let posY = '(h-text_h)/2'; // centro (padrao)
-    if (CONFIG.POSICAO_NOME === 'topo') posY = 'h*0.1';
-    if (CONFIG.POSICAO_NOME === 'base') posY = 'h*0.85';
+    let posY = '(h-text_h)/2';
+    if (posicaoNome === 'topo') posY = 'h*0.1';
+    if (posicaoNome === 'base') posY = 'h*0.85';
 
-    // Limpar nome para uso seguro no FFmpeg (remover caracteres especiais perigosos)
-    const nomeLimpo = nome.replace(/'/g, "\u2019").replace(/[\\:;]/g, ' ');
+    const textoTelaLimpo = (textoTela || '')
+      .replace(/'/g, '\u2019')
+      .replace(/[\\:;]/g, ' ');
 
-    // Montar comando FFmpeg
+    const fonteSegura = String(fonte).replace(/[^a-zA-Z0-9]/g, '');
+
+    const fontFile = bold
+      ? `/usr/share/fonts/truetype/dejavu/${fonteSegura}-Bold.ttf`
+      : `/usr/share/fonts/truetype/dejavu/${fonteSegura}.ttf`;
+
     const cmd = [
       'ffmpeg -y',
       `-i ${VIDEO_BASE_PATH}`,
@@ -123,13 +146,13 @@ app.post('/render', upload.single('audio'), async (req, res) => {
       `"[1:a]adelay=${delayMs}|${delayMs}[delayed];` +
       `[0:a][delayed]amix=inputs=2:duration=first:dropout_transition=0[aout];` +
       `[0:v]drawtext=` +
-      `text='${nomeLimpo}':` +
-      `fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:` +
-      `fontsize=${CONFIG.FONT_SIZE}:` +
-      `fontcolor=${CONFIG.FONT_COLOR}:` +
+      `text='${textoTelaLimpo}':` +
+      `fontfile=${fontFile}:` +
+      `fontsize=${fontSize}:` +
+      `fontcolor=${fontColor}:` +
       `borderw=2:bordercolor=black:` +
       `x=(w-text_w)/2:y=${posY}:` +
-      `enable='between(t,${CONFIG.NOME_INICIO_SEG},${CONFIG.NOME_FIM_SEG})'[vout]"`,
+      `enable='between(t,${nomeInicio},${nomeFim})'[vout]"`,
       '-map "[vout]" -map "[aout]"',
       '-c:v libx264 -preset fast -crf 23',
       '-c:a aac -b:a 128k',
@@ -137,27 +160,26 @@ app.post('/render', upload.single('audio'), async (req, res) => {
     ].join(' ');
 
     console.log('Executando FFmpeg...');
-    execSync(cmd, { timeout: 180000 }); // 3 minutos timeout
+    console.log(cmd);
+
+    execSync(cmd, { timeout: 180000 });
 
     const stats = fs.statSync(outputPath);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`Video pronto! ${nome} | ${Math.round(stats.size / 1024 / 1024)} MB | ${elapsed}s`);
 
-    // Enviar video de volta
     res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `attachment; filename="${nomeLimpo}.mp4"`);
-    
+    res.setHeader('Content-Disposition', `attachment; filename="${textoTelaLimpo || nome}.mp4"`);
+
     const stream = fs.createReadStream(outputPath);
     stream.pipe(res);
     stream.on('end', () => {
-      // Limpar arquivos temporarios
       try { fs.unlinkSync(outputPath); } catch (e) {}
       try { fs.unlinkSync(audioPath); } catch (e) {}
     });
 
   } catch (error) {
     console.error('ERRO na renderizacao:', error.message);
-    // Limpar arquivos temporarios em caso de erro
     if (outputPath) try { fs.unlinkSync(outputPath); } catch (e) {}
     if (audioPath) try { fs.unlinkSync(audioPath); } catch (e) {}
     res.status(500).json({ error: error.message });
@@ -175,8 +197,7 @@ app.listen(PORT, () => {
   console.log(`Health: http://localhost:${PORT}/health`);
   console.log(`Render:  POST http://localhost:${PORT}/render`);
   console.log(`=================================`);
-  
-  // Pre-baixar o video base ao iniciar
+
   try {
     baixarVideoBase();
   } catch (e) {
