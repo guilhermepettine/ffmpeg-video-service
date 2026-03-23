@@ -7,14 +7,10 @@ RUN apt-get update && apt-get install -y \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Baixa fontes antes de definir WORKDIR
-RUN mkdir -p /app/fonts && \
-    find /usr/share/fonts -name "DejaVuSans.ttf" -exec cp {} /app/fonts/ \; && \
-    find /usr/share/fonts -name "DejaVuSans-Bold.ttf" -exec cp {} /app/fonts/ \; && \
-    wget -q -O /app/fonts/GravitasOne-Regular.ttf \
-        "https://fonts.gstatic.com/s/gravitasone/v19/5h1diZ4hJ3cblKy3LWakKQmqDQROwA.ttf"
-
 WORKDIR /app
+
+# Copia fontes do repo (mais confiável que download no build)
+COPY fonts/ fonts/
 
 # Instala dependências Python
 COPY requirements.txt .
