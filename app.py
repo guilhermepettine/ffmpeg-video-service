@@ -113,8 +113,8 @@ def build_ffmpeg_command(
 
     filters = []
 
-    # Delays por áudio
-    audio_labels = []
+    # Delays por áudio gerado
+    audio_labels = ["[0:a]"]  # inclui áudio original do vídeo
     for event in audio_events:
         idx = audio_index_map[event["file_field"]]
         delay_ms = int(float(event.get("start", 0)) * 1000)
@@ -122,7 +122,7 @@ def build_ffmpeg_command(
         filters.append(f"[{idx}:a]adelay={delay_ms}:all=1[{label}]")
         audio_labels.append(f"[{label}]")
 
-    # Mix de áudios
+    # Mix de áudios (original + gerados)
     n = len(audio_labels)
     mix_in = "".join(audio_labels)
     filters.append(f"{mix_in}amix=inputs={n}:duration=longest:normalize=0[aout]")
