@@ -118,8 +118,9 @@ def build_ffmpeg_command(
     for event in audio_events:
         idx = audio_index_map[event["file_field"]]
         delay_ms = int(float(event.get("start", 0)) * 1000)
+        volume = event.get("volume", 1.0)
         label = f"aud{idx}"
-        filters.append(f"[{idx}:a]adelay={delay_ms}:all=1[{label}]")
+        filters.append(f"[{idx}:a]adelay={delay_ms}:all=1,volume={volume}[{label}]")
         audio_labels.append(f"[{label}]")
 
     # Mix de áudios (original + gerados)
