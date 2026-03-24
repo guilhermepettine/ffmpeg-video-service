@@ -125,7 +125,8 @@ def build_ffmpeg_command(
     # Mix de áudios (original + gerados)
     n = len(audio_labels)
     mix_in = "".join(audio_labels)
-    filters.append(f"{mix_in}amix=inputs={n}:duration=longest:normalize=0[aout]")
+    filters.append(f"{mix_in}amix=inputs={n}:duration=longest:normalize=0[amixed]")
+    filters.append("[amixed]volume=0.9[aout]")
 
     # Texto (drawtext encadeado)
     video_out = None
